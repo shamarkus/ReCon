@@ -1,9 +1,11 @@
 import pickle
 import numpy as np
 import torch
+import os
 
 from ContrastiveRegressiveModel import ContrastiveRegressiveModel
-from KimoreDataset import createKimoreAdjacencyMatrix, KimoreDataLoader, KimoreCustomDataset
+from KimoreDataset import createKimoreAdjacencyMatrix, KimoreDataLoader, KimoreValLoader, KimoreCustomDataset 
+from sklearn.model_selection import train_test_split
 
 def get_datasets():
   with open('data/clean/kimoreDataset.pkl','rb') as f:
@@ -17,7 +19,8 @@ def get_datasets():
 
   # Calculate average temporal length
   all_lengths = [len(sample[0]) for sample in cleanData]
-  avg_length = int(np.mean(all_lengths))
+  # avg_length = int(np.mean(all_lengths))
+  avg_length = 400
 
   def resample_positions(dataset):
     for sample in dataset.data:
@@ -37,38 +40,88 @@ def get_datasets():
   resample_positions(T_dataset)
   return S_dataset, T_dataset
 
+def split_datasets(S_dataset, T_dataset):
+	movements = ['Es1', 'Es2', 'Es3', 'Es4', 'Es5']
+
+	S_train_data = []
+	T_train_data = []
+	S_val_data = []
+	T_val_data = []
+
+	for movement in movements:
+# Split for S_dataset
+		S_filtered = S_dataset.filter_by_exercise(movement)
+		S_train_subset, S_val_subset = train_test_split(S_filtered.data, test_size=0.2, random_state=42)
+		S_train_data.extend(S_train_subset)
+		S_val_data.extend(S_val_subset)
+
+# Split for T_dataset
+		T_filtered = T_dataset.filter_by_exercise(movement)
+		T_train_subset, T_val_subset = train_test_split(T_filtered.data, test_size=0.2, random_state=42)
+		T_train_data.extend(T_train_subset)
+		T_val_data.extend(T_val_subset)
+
+# Convert back to KimoreCustomDataset
+	S_train = KimoreCustomDataset(S_train_data)
+	T_train = KimoreCustomDataset(T_train_data)
+	S_val = KimoreCustomDataset(S_val_data)
+	T_val = KimoreCustomDataset(T_val_data)
+
+	return S_train, T_train, S_val, T_val
+
+	
 def main():
-    # Create an instance of the custom DataLoader
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    adj = createKimoreAdjacencyMatrix()
+# Create an instance of the custom DataLoader
+	device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+	adj = createKimoreAdjacencyMatrix()
 
-    model = ContrastiveRegressiveModel(3, 25, adj, device).to(device)
+	model = ContrastiveRegressiveModel(3, 25, adj, device).to(device)
 
-    S_dataset, T_dataset = get_datasets()
-    kimore_loader = KimoreDataLoader(S_dataset, T_dataset, P=3, MB=1)
+	S_dataset, T_dataset = get_datasets()
 
-    optimizer = torch.optim.SGD(model.parameters(), lr = 0.0001)
+	S_train, T_train, S_val, T_val = split_datasets(S_dataset, T_dataset)
+# Change S_dataset and T_dataset here for training & validation
+	train_loader = KimoreDataLoader(S_train, T_train, P=9, MB=3)
+	val_loaders = KimoreValLoader(S_val, T_val)
 
-    for joint_positions, labels in kimore_loader:
-        break
-    # Sample: How to use it in a training loop
-    num_epochs = 1500
-    for epoch in range(num_epochs):
-        running_loss = 0.0
-        # Your training code here
-        # model, optimizer, loss_function, etc.
-        
-        loss = model(joint_positions, labels)
-        
-        running_loss = running_loss + loss
-        
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        print("Epoch ", epoch, flush = True)
-        print("Loss ", running_loss, flush = True)
+	optimizer = torch.optim.Adam(model.parameters(), lr = 0.0001)
 
-    # Return the number of batches this DataLoader will produce in one epoch
+	num_epochs = 1500
+
+	# Get path for saving models
+	models_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../models'))
+
+	for epoch in range(num_epochs):
+		train_loss = train(model, train_loader, optimizer)
+		val_loss = validate(model, val_loaders)
+
+		if epoch % 15 == 0:
+			torch.save(model.state_dict(), os.path.join(models_path,f"STGCN_E{epoch+1}_T{train_loss:.4f}_V{val_loss:.4f}.pth"))
+
+		print("Epoch: ", epoch, " - Training Loss: ", train_loss, " - Validation Loss: ", val_loss, flush = True)
+
+def train(model, train_loader, optimizer):
+	model.train()
+	training_loss = 0.0
+	for joint_positions, labels in train_loader:
+		loss, auxillary_loss = model(joint_positions, labels)
+
+		training_loss += loss
+
+		optimizer.zero_grad()
+		(loss + auxillary_loss).backward()
+		optimizer.step()
+	return training_loss 
+
+def validate(model, val_loaders):
+	model.eval()
+	validation_loss = 0.0
+	for val_loader in val_loaders:
+		for joint_positions, labels in val_loader:
+			loss = model.validate(joint_positions, labels)
+
+			validation_loss += loss
+	return validation_loss 
 
 if __name__ == '__main__':
-    main()
+	main()

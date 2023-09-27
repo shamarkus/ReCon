@@ -94,7 +94,8 @@ class GATv2Conv(MessagePassing):
     x = x_i + x_j
     x = F.leaky_relu(x, self.negative_slope)
     alpha = (x * self.att).sum(dim=-1)
-    alpha = softmax(alpha, index, ptr, size_i, dim = 2)
+    alpha = softmax(alpha, index, ptr, size_i, dim = 2) # B x T x N x H where N is num messages
+    print(alpha.transpose(-1, -2)[0][0][0])
     alpha = F.dropout(alpha, p=self.dropout, training=self.training)
     return x_j * alpha.unsqueeze(-1)
 
@@ -139,7 +140,7 @@ class TemporalConvolutionModule(nn.Module):
       # nn.Dropout(dropout))
 
   def forward(self, x):
-    x = x.permute(0,3,1,2)
+    x = x.permute(0,3,1,2) # BxTxNxC to BxCxTxN
     return self.tcn(x).permute(0,2,3,1)
 
 class SpatialTemporalLayer(nn.Module):
@@ -214,26 +215,26 @@ class STEncoder(nn.Module):
       input_dim = node_dim
     else:
       self.ri = lambda x: x
+    #self.ste = nn.Sequential(
+    #    SpatialTemporalLayer(input_dim, 64, 6),
+    #    SpatialTemporalLayer(64, 64, 6),
+    #    SpatialTemporalLayer(64, 128, 6),
+    #    SpatialTemporalLayer(128, 128, 6),
+    #    SpatialTemporalLayer(128, 256, 6, stride=(2,1)),
+    #    SpatialTemporalLayer(256, 256, 6),
+    #    SpatialTemporalLayer(256, 512, 6),
+    #    SpatialTemporalLayer(512, 512, 6, stride=(2,1))
+    #)
     self.ste = nn.Sequential(
-        SpatialTemporalLayer(input_dim, 64, 6),
+        SpatialTemporalLayer(input_dim, 32, 6),
+        SpatialTemporalLayer(32, 32, 6),
+        SpatialTemporalLayer(32, 64, 6),
         SpatialTemporalLayer(64, 64, 6),
-        SpatialTemporalLayer(64, 128, 6),
+        SpatialTemporalLayer(64, 128, 6, stride=(2,1)),
         SpatialTemporalLayer(128, 128, 6),
-        SpatialTemporalLayer(128, 256, 6, stride=(2,1)),
-        SpatialTemporalLayer(256, 256, 6),
-        SpatialTemporalLayer(256, 512, 6),
-        SpatialTemporalLayer(512, 512, 6, stride=(2,1))
-    )
-    # self.ste = nn.Sequential(
-    #     SpatialTemporalLayer(input_dim, 32, 6),
-    #     SpatialTemporalLayer(32, 32, 6),
-    #     SpatialTemporalLayer(32, 64, 6),
-    #     SpatialTemporalLayer(64, 64, 6),
-    #     SpatialTemporalLayer(64, 128, 6, stride=(2,1)),
-    #     SpatialTemporalLayer(128, 128, 6),
-    #     SpatialTemporalLayer(128, 256, 6),
-    #     SpatialTemporalLayer(256, 256, 6, stride=(2,1))
-	# 	)
+        SpatialTemporalLayer(128, 256, 6),
+        SpatialTemporalLayer(256, 256, 6, stride=(2,1))
+		)
 
     self.pool = DiffPool(256, num_clusters)
 
