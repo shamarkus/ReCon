@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from scipy.spatial.transform import Rotation as R
-from STGCN import STEncoder, STProjector
+from STGCNBaseline import STEncoder, STProjector
 
 class TemporalCrop(object):
 	# Random temporal selection - 50% to 100% RI methodology - frozen frames
@@ -73,10 +73,10 @@ class Augmentor(object):
 		self.temporal_crop = TemporalCrop()
 
 		# Spatial Augmentations
-		self.rot = Rotate(rot = 20)
+		self.rot = Rotate(rot = 15)
 		self.shear = Shear()
-		self.blur = GaussianBlur(sigma=[0.1, 0.8])
-		self.noise = GaussianNoise(std=0.015)
+		self.blur = GaussianBlur(sigma=[0.1, 0.4])
+		self.noise = GaussianNoise(std=0.01)
 		
 	def __call__(self, x, T):
 		x = self.temporal_crop(x, T)
@@ -84,13 +84,13 @@ class Augmentor(object):
 		x = self.noise(x)
 		x = self.blur(x)
 		x = self.rot(x)
-		x = self.shear(x)
+		# x = self.shear(x)
 
 		return x
 
 class ContrastiveRegressiveModel(nn.Module):
     # Initialized temperature as 2.0
-	def __init__(self, input_dim, node_dim, adj, device, temperature = 0.1):
+	def __init__(self, input_dim, node_dim, adj, device, temperature = 1.0):
 		super(ContrastiveRegressiveModel, self).__init__()
 
 		self.A = adj.detach().to(device).requires_grad_(False)
@@ -98,7 +98,7 @@ class ContrastiveRegressiveModel(nn.Module):
 		self.__augment__ = Augmentor()
 
 		# Initialize the online and offline encoders
-		self.f_q = STEncoder(input_dim, node_dim, RI = True)
+		self.f_q = STEncoder(input_dim, node_dim, RI = False)
 		self.g_q = STProjector()
 
 		# Hyperparameters
@@ -158,7 +158,8 @@ class ContrastiveRegressiveModel(nn.Module):
 		# Label distance tensor: M x 2P x 2P
 		dists = self.label_distance(labels)
 		# Similarity Matrix between embeddings: M x 2P x 2P
-		sims = self.vectorized_cosine_similarity(batch) 
+		# sims = self.vectorized_cosine_similarity(batch) 
+		sims = self.vectorized_l1_similarity(batch) 
 		sims = torch.exp((sims * zI) / self.temperature) - I
 
 		# Optimized broadcasting
@@ -170,8 +171,11 @@ class ContrastiveRegressiveModel(nn.Module):
 		past_thresh = past_thresh.permute(0,1,3,2)
 		sum3 = (sims.unsqueeze(-1) * past_thresh).sum(2) + I
 
-		loss = torch.sum(torch.log(sims / sum3 + I)) * (-1 / ( M * (2*P) * (2*P - 1)))
-		return loss
+		interim = torch.log(sims / sum3 + I)
+		# loss = torch.sum(torch.log(sims / sum3 + I)) * (-1 / ( M * (2*P) * (2*P - 1)))
+		loss = torch.sum(interim[:,0:1]) * (-1 / ( M * (P - 1))) + torch.sum(interim[:,P:P+1]) * (-1 / ( M * (P - 1)))
+
+		return loss / 2
 	
 	def normalize_adjacency_matrix(self, adj):
 		D = torch.diag(torch.sum(adj, dim=1))
@@ -243,6 +247,8 @@ class ContrastiveRegressiveModel(nn.Module):
 		sims = self.vectorized_l1_similarity(q) 
 		sims = torch.exp((sims * zI) / self.temperature) - I
 
+		print(dists[:,0:1])
+		print(sims[:,0:1])
 		# Optimized broadcasting
 		past_thresh = (dists.unsqueeze(2) >= dists.unsqueeze(3)).to(self.device)
 		# Set the diagonal elements to zero
@@ -252,7 +258,9 @@ class ContrastiveRegressiveModel(nn.Module):
 		past_thresh = past_thresh.permute(0,1,3,2)
 		sum3 = (sims.unsqueeze(-1) * past_thresh).sum(2) + I
 
-		loss = torch.sum(torch.log(sims / sum3 + I)) * (-1 / ( M * (P) * (P - 1)))
+		interim = torch.log(sims / sum3 + I)
+		# loss = torch.sum(torch.log(sims / sum3 + I)) * (-1 / ( M * (P) * (P - 1)))
+		loss = torch.sum(interim[:,0:1]) * (-1 / ( M * (P - 1))) 
 
 		return loss
 
@@ -270,7 +278,7 @@ class ContrastiveRegressiveModel(nn.Module):
 
 		q = self.f_q(view1, self.A, self.A_dense)
 		q = self.g_q(q)
-		s_q = self.f_q.pool._S
+		# s_q = self.f_q.pool._S
 
 		q = self.unshuffle_data_updated(q).reshape(MB,P,-1)
 
@@ -279,12 +287,12 @@ class ContrastiveRegressiveModel(nn.Module):
 
 		k = self.f_q(view2, self.A, self.A_dense)
 		k = self.g_q(k)
-		s_k = self.f_q.pool._S
+		# s_k = self.f_q.pool._S
 
 		k = self.unshuffle_data_updated(k).reshape(MB,P,-1)
 
 # Compute the contrastive loss
 		loss = self.contrastive_loss(q, k, labels)
-		auxillary_loss = self.auxillary_loss(self.A_dense, s_q, s_k)
+		# auxillary_loss = self.auxillary_loss(self.A_dense, s_q, s_k)
 
-		return loss, auxillary_loss
+		return loss # , auxillary_loss

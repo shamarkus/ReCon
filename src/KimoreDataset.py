@@ -73,6 +73,8 @@ class KimoreBatchCreatorUpdated:
         grouped_data = {}
         for i, (joint_positions, label) in enumerate(dataset):
             movement = dataset.data[i][1]
+            if movement != 'Es1':
+                continue
             if movement not in grouped_data:
                 grouped_data[movement] = []
             grouped_data[movement].append((i, joint_positions, label))
@@ -154,7 +156,8 @@ def KimoreValLoader(S_val, T_val):
 	combined_data = S_val.data + T_val.data
 
 # Split the combined data based on exercise
-	movements = ['Es1', 'Es2', 'Es3', 'Es4', 'Es5']
+	# movements = ['Es1', 'Es2', 'Es3', 'Es4', 'Es5']
+	movements = ['Es1']
 	dataloaders = []
 
 	for movement in movements:

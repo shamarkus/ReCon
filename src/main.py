@@ -81,10 +81,10 @@ def main():
 
 	S_train, T_train, S_val, T_val = split_datasets(S_dataset, T_dataset)
 # Change S_dataset and T_dataset here for training & validation
-	train_loader = KimoreDataLoader(S_train, T_train, P=9, MB=3)
+	train_loader = KimoreDataLoader(S_train, T_train, P=12, MB=1)
 	val_loaders = KimoreValLoader(S_val, T_val)
 
-	optimizer = torch.optim.Adam(model.parameters(), lr = 0.0001)
+	optimizer = torch.optim.Adam(model.parameters(), lr = 0.001)
 
 	num_epochs = 1500
 
@@ -95,7 +95,7 @@ def main():
 		train_loss = train(model, train_loader, optimizer)
 		val_loss = validate(model, val_loaders)
 
-		if epoch % 15 == 0:
+		if val_loss < 1.4:
 			torch.save(model.state_dict(), os.path.join(models_path,f"STGCN_E{epoch+1}_T{train_loss:.4f}_V{val_loss:.4f}.pth"))
 
 		print("Epoch: ", epoch, " - Training Loss: ", train_loss, " - Validation Loss: ", val_loss, flush = True)
@@ -103,25 +103,30 @@ def main():
 def train(model, train_loader, optimizer):
 	model.train()
 	training_loss = 0.0
+	counter = 0
 	for joint_positions, labels in train_loader:
-		loss, auxillary_loss = model(joint_positions, labels)
+		# loss, auxillary_loss = model(joint_positions, labels)
+		loss = model(joint_positions, labels)
 
 		training_loss += loss
+		counter += 1
 
 		optimizer.zero_grad()
-		(loss + auxillary_loss).backward()
+		loss.backward()
 		optimizer.step()
-	return training_loss 
+	return training_loss / counter
 
 def validate(model, val_loaders):
 	model.eval()
 	validation_loss = 0.0
+	counter = 0
 	for val_loader in val_loaders:
 		for joint_positions, labels in val_loader:
 			loss = model.validate(joint_positions, labels)
 
+			counter += 1
 			validation_loss += loss
-	return validation_loss 
+	return validation_loss / counter
 
 if __name__ == '__main__':
 	main()

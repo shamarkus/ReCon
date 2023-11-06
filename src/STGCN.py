@@ -35,7 +35,9 @@ class GCN(nn.Module):
 		# Perform the graph convolution operation
 		support = torch.matmul(x, self.weight)
 		
-		return torch.matmul(adj_norm, support) + self.bias
+		res = torch.matmul(adj_norm, support) + self.bias
+
+		return res.transpose(-1,-2)
 
 class GCNCONV(MessagePassing):
 	def __init__(self, in_channels, out_channels):
@@ -46,28 +48,31 @@ class GCNCONV(MessagePassing):
 		return self.conv(x, edge_index)
 
 # ResNet Bottleneck Architecture
-# LSTM concatenated to the STGCN embedder --> TEMPORAL EMBEDDINGs 
-#  f_q  -> LSTM -> g_q              T'xKxC where T' < T  (400, T' = 125) ( K < N, K = 6 ) 4x256 -> 4x32
 class TemporalConvolutionModule(nn.Module):
-  def __init__(self, out_channels, stride = (1,1), dropout = 0.2):
+  def __init__(self, out_channels, stride = (1,1), h = 2):
     super(TemporalConvolutionModule, self).__init__()
     self.tcn = nn.Sequential(
       nn.BatchNorm2d(out_channels),
-      nn.ReLU(),
-      nn.Conv2d(out_channels, out_channels, kernel_size=(9, 1), padding=(4, 0), stride=stride),
-      nn.BatchNorm2d(out_channels),
-      nn.Dropout(dropout))
+      nn.ReLU(), 
+      nn.Conv2d(out_channels, out_channels // h, kernel_size=1, stride=(1,1)),
+      nn.BatchNorm2d(out_channels // h),
+      nn.ReLU(), 
+      nn.Conv2d(out_channels // h, out_channels // h, kernel_size=(9, 1), padding=(4, 0), stride=stride),
+      nn.BatchNorm2d(out_channels // h),
+      nn.ReLU(), 
+      nn.Conv2d(out_channels // h, out_channels, kernel_size=1, stride=(1,1)),
+      nn.BatchNorm2d(out_channels))
 
   def forward(self, x):
     x = x.permute(0,3,1,2) # BxTxNxC to BxCxTxN
     return self.tcn(x).permute(0,2,3,1)
 
 class SpatialTemporalLayer(nn.Module):
-  def __init__(self, in_channels, out_channels, stride = (1,1), temporal_dropout=0.2):
+  def __init__(self, in_channels, out_channels, stride = (1,1), h = 2):
     super(SpatialTemporalLayer, self).__init__()
 
     self.sl = GCNCONV(in_channels, out_channels)
-    self.tl = TemporalConvolutionModule(out_channels, stride, temporal_dropout)
+    self.tl = TemporalConvolutionModule(out_channels, stride, h)
 
     if in_channels != out_channels or stride != (1,1):
       self.residual = nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride), nn.BatchNorm2d(out_channels))
@@ -143,6 +148,7 @@ class STEncoder(nn.Module):
     self.ste = nn.Sequential(
         SpatialTemporalLayer(input_dim, 64),
         SpatialTemporalLayer(64, 64),
+        SpatialTemporalLayer(64, 64),
         SpatialTemporalLayer(64, 128, stride=(2,1)),
         SpatialTemporalLayer(128, 128),
         SpatialTemporalLayer(128, 128),
@@ -160,15 +166,14 @@ class STEncoder(nn.Module):
     return self.pool((x, adj, adj_dense))
 
 class STProjector(nn.Module):
-	def __init__(self, in_channels = 256, num_clusters = 6, conv_dim = 48, out_channels = 256):
+	def __init__(self, in_channels = 256, num_clusters = 6, conv_dim = 48, out_channels = 128):
 		super(STProjector, self).__init__()
 
 		self.f = lambda x: torch.mean(x, dim = 1)
 		self.h = nn.Sequential(
 			GCN(in_channels, conv_dim), 
-			nn.BatchNorm1d(num_clusters),
-			nn.ReLU(),
-			nn.Flatten())
+			nn.BatchNorm1d(conv_dim),
+			nn.ReLU())
 		self.g = nn.Sequential(
 			Linear(in_channels + num_clusters * conv_dim, out_channels),
 			nn.ReLU(),
@@ -181,7 +186,7 @@ class STProjector(nn.Module):
 		body_emb = self.f(x)
 
 		# Generate ST reduced joint embeddings - Supplementary Controls
-		joint_emb = self.h((x, adj))
+		joint_emb = torch.flatten(self.h((x, adj)).transpose(-1,-2), start_dim=1)
 
 		# Concatenate and pass through feed-forward MLP
 		proj_emb = self.g(torch.cat((body_emb, joint_emb), dim = 1))
